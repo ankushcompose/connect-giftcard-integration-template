@@ -31,10 +31,12 @@
     "dotenv": "17.4.2",
     "fastify": "5.8.5",
     "fastify-plugin": "5.1.0",
-    "qs": "6.15.1"
+    "qs": "6.15.3"
   },
   "overrides": {
-    "lodash": "^4.18.1"
+    "lodash": "^4.18.1",
+    "undici": "7.28.0",
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "@jest/globals": "30.4.1",

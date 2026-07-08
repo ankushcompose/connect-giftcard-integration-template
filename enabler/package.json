@@ -15,12 +15,12 @@
   "devDependencies": {
     "@types/node": "25.7.0",
     "jest": "30.3.0",
-    "sass": "1.98.0",
     "prettier": "^3.8.1",
+    "sass": "1.98.0",
     "ts-jest": "29.4.9",
     "ts-node": "^10.9.2",
     "typescript": "5.9.3",
-    "vite": "7.3.2",
+    "vite": "7.3.6",
     "vite-plugin-css-injected-by-js": "3.5.2"
   },
   "dependencies": {
