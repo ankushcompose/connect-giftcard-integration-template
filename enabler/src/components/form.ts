@@ -70,9 +70,12 @@ const COPY = {
   // member tries to redeem points worth the whole order or more).
   tooMuch:
     'Qantas Points can only cover part of your order. Please choose fewer points so a balance remains to pay by card.',
-  change: 'Use different points',
   unavailableConfig: 'Qantas Points isn’t set up for this store yet.',
+  // The bundle/button genuinely failed to load (script error / widget missing).
   unavailableLoad: 'The Qantas Points sign-in couldn’t load. Please refresh and try again.',
+  // The sign-in loaded fine but reported a problem mid-flow (distinct from a
+  // load failure, and it must NOT wipe points the member already applied).
+  widgetError: 'Something went wrong with the Qantas sign-in. Please try again.',
   ariaLabel: 'Use Qantas Points',
 };
 
@@ -92,6 +95,9 @@ export class FormBuilder extends BaseComponentBuilder {
 export class FormComponent extends DefaultComponent {
   protected i18n: I18n;
   private widgetConfig?: WidgetConfig;
+  // True once the member has a valid points reservation applied, so a later
+  // widget error (e.g. the sign-in closing) doesn't wipe it.
+  private applied = false;
 
   constructor(opts: { giftcardOptions: GiftCardOptions; baseOptions: BaseOptions }) {
     super(opts);
@@ -243,7 +249,7 @@ export class FormComponent extends DefaultComponent {
           payment: (actions: QantasPaymentActions) =>
             actions.createQuote(conf.amount.centAmount / 100, []),
           onAuthorize: (data: QantasAuthorizeData) => this._onAuthorize(data),
-          onError: () => this._showUnavailable(COPY.unavailableLoad),
+          onError: () => this._onWidgetError(),
         },
         '#qantas-points-button',
       );
@@ -269,6 +275,7 @@ export class FormComponent extends DefaultComponent {
     // total (or more), reject it (fail-closed: nothing applied) and prompt them
     // to choose fewer. Reserving below the total also avoids over-burning points.
     if (cents <= 0 || cents >= payableCents) {
+      this.applied = false;
       getInput(fieldIds.code).value = '';
       const un = document.getElementById('qantas-points-unavailable');
       if (un) {
@@ -298,7 +305,21 @@ export class FormComponent extends DefaultComponent {
       applied.removeAttribute('hidden');
     }
 
+    this.applied = true;
     void this.giftcardOptions?.onValueChange?.(true);
+  }
+
+  // The Qantas widget reported an error AFTER it loaded. If the member already
+  // has a valid reservation applied, keep it (a benign close/error must not wipe
+  // it); otherwise surface a truthful "try again" message (not "couldn't load").
+  private _onWidgetError(): void {
+    if (this.applied) return;
+    const un = document.getElementById('qantas-points-unavailable');
+    if (un) {
+      un.textContent = COPY.widgetError;
+      un.removeAttribute('hidden');
+    }
+    void this.giftcardOptions?.onValueChange?.(false);
   }
 
   private _loadScript(src: string): Promise<void> {
