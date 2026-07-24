@@ -171,6 +171,18 @@ export class MockGiftCardService extends AbstractGiftCardService {
       });
     }
 
+    // PARTIAL-ONLY RULE (server-enforced, before any burn): Qantas Points must
+    // never cover the whole order — a balance must remain for another payment
+    // method. Reject a redemption that would cover the entire payable amount.
+    // Placed BEFORE the payment/burn side effects so no points are spent.
+    if (redeemAmount.centAmount >= amountPlanned.centAmount) {
+      throw new MockCustomError({
+        message: 'Qantas Points can only cover part of the order; a balance must remain for another payment method.',
+        code: 400,
+        key: GiftCardCodeType.GENERIC_ERROR,
+      });
+    }
+
     const ctPayment = await this.ctPaymentService.createPayment({
       amountPlanned: redeemAmount,
       paymentMethodInfo: {

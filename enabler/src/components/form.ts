@@ -64,7 +64,12 @@ const readWidget = (): QantasWidget | null => {
 // codes only; kept inline for this POC).
 const COPY = {
   body: 'Qantas Frequent Flyer members can put points towards this order. Sign in with Qantas and choose how many points to use; the rest is paid by card.',
-  applied: (points: string, dollars: string) => `${points} Qantas Points applied (${dollars}).`,
+  applied: (points: string, dollars: string, remaining: string) =>
+    `${points} Qantas Points applied (${dollars}). ${remaining} still to pay by card.`,
+  // Points must always be PARTIAL — a card balance must remain (shown when the
+  // member tries to redeem points worth the whole order or more).
+  tooMuch:
+    'Qantas Points can only cover part of your order. Please choose fewer points so a balance remains to pay by card.',
   change: 'Use different points',
   unavailableConfig: 'Qantas Points isn’t set up for this store yet.',
   unavailableLoad: 'The Qantas Points sign-in couldn’t load. Please refresh and try again.',
@@ -253,24 +258,43 @@ export class FormComponent extends DefaultComponent {
   // controls enable. The actual burn (server-side, fail-closed) happens on redeem.
   private _onAuthorize(data: QantasAuthorizeData): void {
     const currency = this.widgetConfig?.amount.currencyCode ?? '';
+    const payableCents = this.widgetConfig?.amount.centAmount ?? 0;
     const cents = Math.round(data.currencyAmount * 100);
-    const code = `QF:${data.memberNumber}:${data.quoteNumber}:${cents}:${currency}`;
+    const locale = this.baseOptions.locale || 'en-AU';
+    const money = (dollars: number) =>
+      new Intl.NumberFormat(locale, { style: 'currency', currency: currency || 'AUD' }).format(dollars);
 
-    const input = getInput(fieldIds.code);
-    input.value = code;
+    // PARTIAL-ONLY RULE: Qantas Points can never cover the whole order — a card
+    // balance must always remain. If the member redeemed points worth the full
+    // total (or more), reject it (fail-closed: nothing applied) and prompt them
+    // to choose fewer. Reserving below the total also avoids over-burning points.
+    if (cents <= 0 || cents >= payableCents) {
+      getInput(fieldIds.code).value = '';
+      const un = document.getElementById('qantas-points-unavailable');
+      if (un) {
+        un.textContent = COPY.tooMuch;
+        un.removeAttribute('hidden');
+      }
+      const appliedEl = document.getElementById('qantas-points-applied');
+      if (appliedEl) appliedEl.setAttribute('hidden', '');
+      void this.giftcardOptions?.onValueChange?.(false);
+      return;
+    }
+
+    const code = `QF:${data.memberNumber}:${data.quoteNumber}:${cents}:${currency}`;
+    getInput(fieldIds.code).value = code;
     hideError(fieldIds.code);
 
-    const points = new Intl.NumberFormat(this.baseOptions.locale || 'en-AU').format(
-      Math.max(0, Math.round(data.pointsBurned)),
-    );
-    const dollars = new Intl.NumberFormat(this.baseOptions.locale || 'en-AU', {
-      style: 'currency',
-      currency: currency || 'AUD',
-    }).format(data.currencyAmount);
+    // Clear any prior "choose fewer points" message now that the pick is valid.
+    const un = document.getElementById('qantas-points-unavailable');
+    if (un) un.setAttribute('hidden', '');
+
+    const points = new Intl.NumberFormat(locale).format(Math.max(0, Math.round(data.pointsBurned)));
+    const remaining = money((payableCents - cents) / 100);
 
     const applied = document.getElementById('qantas-points-applied');
     if (applied) {
-      applied.textContent = COPY.applied(points, dollars);
+      applied.textContent = COPY.applied(points, money(data.currencyAmount), remaining);
       applied.removeAttribute('hidden');
     }
 
