@@ -13,6 +13,13 @@ export const config = {
 
   mockConnectorCurrency: process.env.MOCK_CONNECTOR_CURRENCY || '',
 
+  // Qantas Points POS gateway (real burn). Env selects staging vs live; the token
+  // (Basic auth) + partner-forward header are SECURED config, read only server-side.
+  qantasEnv: (process.env.QANTAS_ENV === 'production' ? 'live' : 'stg') as 'stg' | 'live',
+  qantasPosGatewayToken: process.env.QANTAS_POS_GATEWAY_TOKEN || '',
+  qantasForwardHeader: process.env.QANTAS_FORWARD_HEADER || '',
+  qantasTerminalId: process.env.QANTAS_TERMINAL_ID || 'fw-web',
+
   // Required by logger
   loggerLevel: process.env.LOGGER_LEVEL || 'info',
 };

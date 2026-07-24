@@ -19,7 +19,7 @@ import { RedeemRequestDTO } from '../dtos/mock-giftcards.dto';
 import { getConfig } from '../config/config';
 import { appLogger, paymentSDK } from '../payment-sdk';
 import { AbstractGiftCardService } from './abstract-giftcard.service';
-import { MockAPI } from '../clients/mock-giftcard.client';
+import { QantasAPI } from '../clients/qantas-giftcard.client';
 import {
   MockClientBalanceResponse,
   MockClientRedeemRequest,
@@ -82,9 +82,9 @@ export class MockGiftCardService extends AbstractGiftCardService {
         }),
         async () => {
           try {
-            const healthcheckResult = await MockAPI().healthcheck();
+            const healthcheckResult = await QantasAPI().healthcheck();
             return {
-              name: 'mock giftcard API call',
+              name: 'Qantas Points gateway',
               status: 'UP',
               details: {
                 healthcheckResult,
@@ -92,9 +92,9 @@ export class MockGiftCardService extends AbstractGiftCardService {
             };
           } catch (e) {
             return {
-              name: 'mock giftcard API call',
+              name: 'Qantas Points gateway',
               status: 'DOWN',
-              message: `Not able to communicate with giftcard service provider API`,
+              message: `Not able to communicate with the Qantas Points gateway`,
               details: {
                 // TODO do not expose the error
                 error: e,
@@ -126,20 +126,13 @@ export class MockGiftCardService extends AbstractGiftCardService {
       });
     }
 
-    const getBalanceResult: MockClientBalanceResponse = await MockAPI().balance(code);
+    const getBalanceResult: MockClientBalanceResponse = await QantasAPI().balance(code);
 
     return this.balanceConverter.convert(getBalanceResult);
   }
 
   async redeem(opts: { data: RedeemRequestDTO }): Promise<RedeemResponseDTO> {
     const redeemCode = opts.data.code;
-    if (redeemCode && redeemCode.startsWith('Valid-00')) {
-      throw new MockCustomError({
-        message: 'The gift card is expired.',
-        code: 400,
-        key: GiftCardCodeType.EXPIRED,
-      });
-    }
     const ctCart = await this.ctCartService.getCart({
       id: getCartIdFromContext(),
     });
@@ -186,7 +179,7 @@ export class MockGiftCardService extends AbstractGiftCardService {
       amount: redeemAmount,
     };
 
-    const response: MockClientRedeemResponse = await MockAPI().redeem(request);
+    const response: MockClientRedeemResponse = await QantasAPI().redeem(request);
 
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
@@ -298,7 +291,7 @@ export class MockGiftCardService extends AbstractGiftCardService {
       },
     });
 
-    const rollbackResult = await MockAPI().rollback(request.payment.interfaceId || '');
+    const rollbackResult = await QantasAPI().rollback(request.payment.interfaceId || '');
 
     await this.ctPaymentService.updatePayment({
       id: request.payment.id,
@@ -306,7 +299,10 @@ export class MockGiftCardService extends AbstractGiftCardService {
         type: 'Refund',
         amount: request.amount,
         interactionId: rollbackResult.id,
-        state: rollbackResult.result ? 'Success' : 'Failure',
+        // Only 'SUCCESS' is a real refund; any other value (incl. the truthy
+        // string 'FAILED') must record a Failure so the ledger never claims a
+        // refund that did not move money.
+        state: rollbackResult.result === 'SUCCESS' ? 'Success' : 'Failure',
       },
     });
 

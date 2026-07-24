@@ -35,7 +35,21 @@ deployAs:
         - key: MOCK_CONNECTOR_CURRENCY
           description: Currency Code assigned to a single deployment of this connector template
           required: true
+        - key: QANTAS_ENV
+          description: Qantas Points environment; "production" for live, anything else uses staging
+          required: false
+          default: stg
+        - key: QANTAS_TERMINAL_ID
+          description: Stable POS terminal label sent with each burn
+          required: false
+          default: fw-web
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret
+          required: true
+        - key: QANTAS_POS_GATEWAY_TOKEN
+          description: Qantas POS gateway Basic auth secret (base64 of "<merchant>:<password>")
+          required: true
+        - key: QANTAS_FORWARD_HEADER
+          description: Qantas Loyalty-Partner-Forward header (partner GUID from the onboarding pack)
           required: true
