@@ -43,6 +43,12 @@ deployAs:
           description: Stable POS terminal label sent with each burn
           required: false
           default: fw-web
+        - key: QANTAS_CLIENT_ID
+          description: Qantas-provided Client_ID (GUID) used by the browser sign-in button (public)
+          required: true
+        - key: QANTAS_CLIENT_NAME
+          description: Qantas partner short-name used by the browser sign-in button, e.g. FortyWinks (public)
+          required: true
       securedConfiguration:
         - key: CTP_CLIENT_SECRET
           description: commercetools client secret

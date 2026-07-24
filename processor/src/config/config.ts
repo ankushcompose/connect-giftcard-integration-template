@@ -19,6 +19,10 @@ export const config = {
   qantasPosGatewayToken: process.env.QANTAS_POS_GATEWAY_TOKEN || '',
   qantasForwardHeader: process.env.QANTAS_FORWARD_HEADER || '',
   qantasTerminalId: process.env.QANTAS_TERMINAL_ID || 'fw-web',
+  // PUBLIC Qantas widget identifiers (the browser needs them to render the
+  // "Use Qantas Points" sign-in button). Not secret — safe to hand to the UI.
+  qantasClientId: process.env.QANTAS_CLIENT_ID || '',
+  qantasClientName: process.env.QANTAS_CLIENT_NAME || '',
 
   // Required by logger
   loggerLevel: process.env.LOGGER_LEVEL || 'info',

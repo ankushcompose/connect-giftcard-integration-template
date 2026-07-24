@@ -131,6 +131,29 @@ export class MockGiftCardService extends AbstractGiftCardService {
     return this.balanceConverter.convert(getBalanceResult);
   }
 
+  /**
+   * PUBLIC widget configuration for the browser "Use Qantas Points" sign-in:
+   * the Qantas Client_ID/name + environment (all non-secret) plus the cart's
+   * currently-payable amount, so the widget reserves a quote against the right
+   * figure. The POS token / forward header are NEVER included (server-only).
+   */
+  async widgetConfig(): Promise<{
+    clientId: string;
+    clientName: string;
+    env: string;
+    amount: { centAmount: number; currencyCode: string };
+  }> {
+    const cfg = getConfig();
+    const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
+    const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
+    return {
+      clientId: cfg.qantasClientId,
+      clientName: cfg.qantasClientName,
+      env: cfg.qantasEnv,
+      amount: { centAmount: amountPlanned.centAmount, currencyCode: amountPlanned.currencyCode },
+    };
+  }
+
   async redeem(opts: { data: RedeemRequestDTO }): Promise<RedeemResponseDTO> {
     const redeemCode = opts.data.code;
     const ctCart = await this.ctCartService.getCart({

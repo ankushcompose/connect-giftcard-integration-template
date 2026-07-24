@@ -54,6 +54,27 @@ export const mockGiftCardServiceRoutes = async (
     },
   );
 
+  fastify.get(
+    '/config',
+    {
+      preHandler: [opts.sessionHeaderAuthHook.authenticate()],
+      schema: {
+        response: {
+          200: Type.Object({
+            clientId: Type.String(),
+            clientName: Type.String(),
+            env: Type.String(),
+            amount: AmountSchema,
+          }),
+        },
+      },
+    },
+    async (_request, reply) => {
+      const res = await opts.giftCardService.widgetConfig();
+      return reply.status(200).send(res);
+    },
+  );
+
   fastify.post<{ Body: RedeemRequestDTO; Reply: void }>(
     '/redeem',
     {
