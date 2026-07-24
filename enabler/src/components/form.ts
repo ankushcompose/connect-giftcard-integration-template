@@ -226,6 +226,14 @@ export class FormComponent extends DefaultComponent {
     }
     const conf: WidgetConfig = cfg;
     this.widgetConfig = conf;
+    if (conf.env !== 'live') {
+      // Staging diagnostic: confirm the payable amount handed to the widget.
+      console.info('[qantas] widget config', {
+        env: conf.env,
+        centAmount: conf.amount.centAmount,
+        currency: conf.amount.currencyCode,
+      });
+    }
 
     try {
       await this._loadScript(QANTAS_WIDGET_SRC[conf.env] ?? QANTAS_WIDGET_SRC.stg);
@@ -249,7 +257,7 @@ export class FormComponent extends DefaultComponent {
           payment: (actions: QantasPaymentActions) =>
             actions.createQuote(conf.amount.centAmount / 100, []),
           onAuthorize: (data: QantasAuthorizeData) => this._onAuthorize(data),
-          onError: () => this._onWidgetError(),
+          onError: (message: string) => this._onWidgetError(message),
         },
         '#qantas-points-button',
       );
@@ -263,6 +271,15 @@ export class FormComponent extends DefaultComponent {
   // the applied state, and tell the checkout a value is present so its Apply/Pay
   // controls enable. The actual burn (server-side, fail-closed) happens on redeem.
   private _onAuthorize(data: QantasAuthorizeData): void {
+    if (this.widgetConfig?.env !== 'live') {
+      // Staging diagnostic: confirms the sign-in actually reached authorize (our
+      // code) rather than dying in the widget, plus the amounts it returned.
+      console.info('[qantas] onAuthorize fired', {
+        currencyAmount: data.currencyAmount,
+        pointsBurned: data.pointsBurned,
+        hasQuote: Boolean(data.quoteNumber),
+      });
+    }
     const currency = this.widgetConfig?.amount.currencyCode ?? '';
     const payableCents = this.widgetConfig?.amount.centAmount ?? 0;
     const cents = Math.round(data.currencyAmount * 100);
@@ -312,7 +329,13 @@ export class FormComponent extends DefaultComponent {
   // The Qantas widget reported an error AFTER it loaded. If the member already
   // has a valid reservation applied, keep it (a benign close/error must not wipe
   // it); otherwise surface a truthful "try again" message (not "couldn't load").
-  private _onWidgetError(): void {
+  private _onWidgetError(message?: string): void {
+    if (this.widgetConfig?.env !== 'live') {
+      // Staging diagnostic: surface the widget's OWN error text so a failing
+      // sign-in is legible (shopper-facing copy stays generic). This is what
+      // distinguishes a Qantas-side failure from anything in our own flow.
+      console.error('[qantas] sign-in widget error:', message ?? '(no message)');
+    }
     if (this.applied) return;
     const un = document.getElementById('qantas-points-unavailable');
     if (un) {
