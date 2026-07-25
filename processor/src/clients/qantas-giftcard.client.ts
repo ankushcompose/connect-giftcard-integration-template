@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getConfig } from '../config/config';
+import { log } from '../libs/logger';
 import {
   MockClientBalanceResponse,
   MockClientRedeemRequest,
@@ -79,6 +80,7 @@ export class QantasGiftCardClient {
   private token: string;
   private forwardHeader: string;
   private terminalId: string;
+  private env: 'stg' | 'live';
 
   public constructor(opts: { currency: string }) {
     const cfg = getConfig();
@@ -87,6 +89,7 @@ export class QantasGiftCardClient {
     this.token = cfg.qantasPosGatewayToken;
     this.forwardHeader = cfg.qantasForwardHeader;
     this.terminalId = cfg.qantasTerminalId;
+    this.env = cfg.qantasEnv;
   }
 
   public async healthcheck(): Promise<MockClientStatusResponse> {
@@ -130,10 +133,12 @@ export class QantasGiftCardClient {
 
     if (!this.token || !this.forwardHeader) {
       // Fail-closed: never attempt a burn we can't authenticate.
+      log.error('[qantas] redeem failed: POS gateway not configured (token/forward header missing)');
       return failure;
     }
     const parsed = parseQantasCode(request.code);
     if (!parsed) {
+      log.error('[qantas] redeem failed: invalid reservation code format');
       return failure;
     }
 
@@ -160,15 +165,24 @@ export class QantasGiftCardClient {
       });
       payload = (await upstream.json().catch(() => null)) as Record<string, unknown> | null;
       if (!upstream.ok) {
+        log.error('[qantas] redeem failed: POS gateway rejected the burn', {
+          status: upstream.status,
+          // Body only on staging (may echo member/quote detail) to pinpoint the cause.
+          ...(this.env !== 'live' ? { body: JSON.stringify(payload)?.slice(0, 300) } : {}),
+        });
         return failure;
       }
-    } catch {
+    } catch (err) {
+      log.error('[qantas] redeem failed: POS gateway network error', {
+        ...(this.env !== 'live' ? { error: String(err).slice(0, 200) } : {}),
+      });
       return failure;
     }
 
     const transactionNumber = payload?.transactionNumber as string | undefined;
     if (!transactionNumber) {
       // A 2xx with no transaction number can't be reconciled — do not confirm.
+      log.error('[qantas] redeem failed: gateway returned 2xx with no transactionNumber');
       return failure;
     }
 
@@ -180,6 +194,10 @@ export class QantasGiftCardClient {
     const coveredCents =
       typeof rawCovered === 'number' && Number.isFinite(rawCovered) ? Math.floor(rawCovered * 100) : null;
     if (coveredCents === null || coveredCents < request.amount.centAmount) {
+      log.error('[qantas] redeem failed: burned value does not cover the charge', {
+        coveredCents,
+        requiredCents: request.amount.centAmount,
+      });
       return failure;
     }
 
@@ -197,6 +215,10 @@ export class QantasGiftCardClient {
     //     job. This connector is fail-closed on the ORDER outcome, not yet on the
     //     money side effect.
 
+    log.info('[qantas] redeem success', {
+      requiredCents: request.amount.centAmount,
+      coveredCents,
+    });
     return {
       resultCode: 'SUCCESS',
       redemptionReference: transactionNumber,
