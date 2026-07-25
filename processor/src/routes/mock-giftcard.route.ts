@@ -65,6 +65,7 @@ export const mockGiftCardServiceRoutes = async (
             clientName: Type.String(),
             env: Type.String(),
             amount: AmountSchema,
+            totalAmount: AmountSchema,
           }),
         },
       },

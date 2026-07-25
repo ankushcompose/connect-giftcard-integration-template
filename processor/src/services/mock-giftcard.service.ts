@@ -31,6 +31,7 @@ import { BalanceResponseSchemaDTO, RedeemResponseDTO } from '../dtos/mock-giftca
 import { MockCustomError } from '../errors/mock-api.error';
 import { BalanceConverter } from './converters/balance-converter';
 import { RedemptionConverter } from './converters/redemption-converter';
+import { computeCoverableAmount } from './coverable-amount';
 
 import packageJSON from '../../package.json';
 import { log } from '../libs/logger';
@@ -142,15 +143,21 @@ export class MockGiftCardService extends AbstractGiftCardService {
     clientName: string;
     env: string;
     amount: { centAmount: number; currencyCode: string };
+    totalAmount: { centAmount: number; currencyCode: string };
   }> {
     const cfg = getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
+    // Points cover the goods only — delivery is always paid by card. The widget
+    // reserves against the ex-delivery figure; the full total lets the checkout
+    // UI show the correct "still to pay by card" amount (which includes delivery).
+    const coverable = computeCoverableAmount(ctCart, amountPlanned);
     return {
       clientId: cfg.qantasClientId,
       clientName: cfg.qantasClientName,
       env: cfg.qantasEnv,
-      amount: { centAmount: amountPlanned.centAmount, currencyCode: amountPlanned.currencyCode },
+      amount: { centAmount: coverable.centAmount, currencyCode: coverable.currencyCode },
+      totalAmount: { centAmount: amountPlanned.centAmount, currencyCode: amountPlanned.currencyCode },
     };
   }
 
@@ -171,13 +178,16 @@ export class MockGiftCardService extends AbstractGiftCardService {
       });
     }
 
-    // PARTIAL-ONLY RULE (server-enforced, before any burn): Qantas Points must
-    // never cover the whole order — a balance must remain for another payment
-    // method. Reject a redemption that would cover the entire payable amount.
-    // Placed BEFORE the payment/burn side effects so no points are spent.
-    if (redeemAmount.centAmount >= amountPlanned.centAmount) {
+    // COVERAGE RULE (server-enforced, before any burn): Qantas Points cover the
+    // goods only — the delivery fee is ALWAYS paid by another method (card). So
+    // a redemption may cover up to the payable amount MINUS shipping, and no
+    // more (points reaching the full ex-delivery amount is allowed). Placed
+    // BEFORE the payment/burn side effects so no points are spent on a rejected
+    // redemption (fail-closed).
+    const coverable = computeCoverableAmount(ctCart, amountPlanned);
+    if (redeemAmount.centAmount <= 0 || redeemAmount.centAmount > coverable.centAmount) {
       throw new MockCustomError({
-        message: 'Qantas Points can only cover part of the order; a balance must remain for another payment method.',
+        message: 'Qantas Points cover the item total only; the delivery fee must be paid by another method.',
         code: 400,
         key: GiftCardCodeType.GENERIC_ERROR,
       });

@@ -22,7 +22,12 @@ type WidgetConfig = {
   clientId: string;
   clientName: string;
   env: string;
+  // The ex-delivery amount points may cover (the widget reserves against this,
+  // so its "max" equals the goods total and delivery is never covered).
   amount: Amount;
+  // The full payable (goods + delivery), used only to show the correct "still
+  // to pay by card" figure — which always includes the delivery fee.
+  totalAmount: Amount;
 };
 
 interface QantasPaymentActions {
@@ -66,10 +71,10 @@ const COPY = {
   body: 'Qantas Frequent Flyer members can put points towards this order. Sign in with Qantas and choose how many points to use; the rest is paid by card.',
   applied: (points: string, dollars: string, remaining: string) =>
     `${points} Qantas Points applied (${dollars}). ${remaining} still to pay by card.`,
-  // Points must always be PARTIAL — a card balance must remain (shown when the
-  // member tries to redeem points worth the whole order or more).
+  // Points cover the goods only — the delivery fee is always paid by card
+  // (shown for an empty pick or one that exceeds the ex-delivery amount).
   tooMuch:
-    'Qantas Points can only cover part of your order. Please choose fewer points so a balance remains to pay by card.',
+    'Qantas Points cover the item total only — the delivery fee is paid by card. Please adjust your points and try again.',
   unavailableConfig: 'Qantas Points isn’t set up for this store yet.',
   // The bundle/button genuinely failed to load (script error / widget missing).
   unavailableLoad: 'The Qantas Points sign-in couldn’t load. Please refresh and try again.',
@@ -231,6 +236,7 @@ export class FormComponent extends DefaultComponent {
       console.info('[qantas] widget config', {
         env: conf.env,
         centAmount: conf.amount.centAmount,
+        totalCentAmount: conf.totalAmount.centAmount,
         currency: conf.amount.currencyCode,
       });
     }
@@ -281,17 +287,20 @@ export class FormComponent extends DefaultComponent {
       });
     }
     const currency = this.widgetConfig?.amount.currencyCode ?? '';
-    const payableCents = this.widgetConfig?.amount.centAmount ?? 0;
+    // `coverableCents` = the ex-delivery amount points may cover (the widget's
+    // max); `totalCents` = the full payable, used only for the remaining line.
+    const coverableCents = this.widgetConfig?.amount.centAmount ?? 0;
+    const totalCents = this.widgetConfig?.totalAmount?.centAmount ?? coverableCents;
     const cents = Math.round(data.currencyAmount * 100);
     const locale = this.baseOptions.locale || 'en-AU';
     const money = (dollars: number) =>
       new Intl.NumberFormat(locale, { style: 'currency', currency: currency || 'AUD' }).format(dollars);
 
-    // PARTIAL-ONLY RULE: Qantas Points can never cover the whole order — a card
-    // balance must always remain. If the member redeemed points worth the full
-    // total (or more), reject it (fail-closed: nothing applied) and prompt them
-    // to choose fewer. Reserving below the total also avoids over-burning points.
-    if (cents <= 0 || cents >= payableCents) {
+    // COVERAGE RULE: points cover the goods only — delivery is always paid by
+    // card. The widget already caps the pick at the ex-delivery amount, so a
+    // member may redeem right up to it (the "max" case is allowed). Reject only
+    // an empty pick or one that somehow exceeds it (fail-closed: nothing applied).
+    if (cents <= 0 || cents > coverableCents) {
       this.applied = false;
       getInput(fieldIds.code).value = '';
       const un = document.getElementById('qantas-points-unavailable');
@@ -314,7 +323,8 @@ export class FormComponent extends DefaultComponent {
     if (un) un.setAttribute('hidden', '');
 
     const points = new Intl.NumberFormat(locale).format(Math.max(0, Math.round(data.pointsBurned)));
-    const remaining = money((payableCents - cents) / 100);
+    // Remaining for the card = full payable (incl. delivery) − points applied.
+    const remaining = money((totalCents - cents) / 100);
 
     const applied = document.getElementById('qantas-points-applied');
     if (applied) {
