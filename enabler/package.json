@@ -25,5 +25,8 @@
   },
   "dependencies": {
     "serve": "14.2.6"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8"
   }
 }
