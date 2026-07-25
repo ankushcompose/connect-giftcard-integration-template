@@ -204,7 +204,8 @@ export class MockGiftCardService extends AbstractGiftCardService {
       amountPlanned: redeemAmount,
       paymentMethodInfo: {
         paymentInterface: getPaymentInterfaceFromContext() || 'mock-giftcard-provider',
-        method: 'giftcard',
+        method: 'qantasburn',
+        name: { 'en-AU': 'Qantas Burn', en: 'Qantas Burn' },
       },
       ...(ctCart.customerId && {
         customer: {
@@ -233,6 +234,29 @@ export class MockGiftCardService extends AbstractGiftCardService {
 
     const response: MockClientRedeemResponse = await QantasAPI().redeem(request);
 
+    const txState = this.redemptionConverter.convertMockClientResultCode(response.resultCode);
+    // Record the two-phase lifecycle so the payment mirrors the card: an
+    // Authorization (points reserved) then a Charge (the CAPTURE — the burn).
+    // commercetools has no "Capture" transaction type; Charge IS the capture.
+    // The Authorization is cosmetic bookkeeping AFTER the irreversible burn, so it
+    // is best-effort: a transient CT error here must never reject a redeem whose
+    // points are already spent. The Charge below is the load-bearing write (it
+    // carries the pspReference and is what commercetools counts as paid).
+    await this.ctPaymentService
+      .updatePayment({
+        id: ctPayment.id,
+        transaction: {
+          type: 'Authorization',
+          amount: ctPayment.amountPlanned,
+          interactionId: response.redemptionReference,
+          state: txState,
+        },
+      })
+      .catch((err) => {
+        log.warn('[qantas] could not record Authorization transaction (non-fatal)', {
+          error: String(err).slice(0, 120),
+        });
+      });
     const updatedPayment = await this.ctPaymentService.updatePayment({
       id: ctPayment.id,
       pspReference: response.redemptionReference,
@@ -240,10 +264,58 @@ export class MockGiftCardService extends AbstractGiftCardService {
         type: 'Charge',
         amount: ctPayment.amountPlanned,
         interactionId: response.redemptionReference,
-        state: this.redemptionConverter.convertMockClientResultCode(response.resultCode),
+        state: txState,
       },
     });
+
+    // Populate the payment's PSP status code + text. The payments SDK does not
+    // expose `paymentStatus`, so set it directly — fire-and-forget (this connector
+    // is a long-lived container, so a detached promise still completes). Keeping
+    // token-refresh + CT-status latency OFF the redeem critical path, and it can
+    // never fail the (already-completed) burn/order.
+    void this.setPaymentInterfaceStatus(updatedPayment.id, updatedPayment.version, txState === 'Success').catch(
+      (err) => {
+        log.warn('[qantas] could not set payment status code (non-fatal)', {
+          error: String(err).slice(0, 120),
+        });
+      },
+    );
+
     return this.redemptionConverter.convert({ redemptionResult: response, createPaymentResult: updatedPayment });
+  }
+
+  /**
+   * Set the payment's PSP status code + human-readable text directly on
+   * commercetools — the payments SDK's `updatePayment` does not expose
+   * `paymentStatus`. The formal "Payment state" is a separate workflow State
+   * reference that requires payment states defined in the project, so it is
+   * intentionally left for that project-level setup. Bounded by a short timeout
+   * so it can never hang the redeem request.
+   */
+  private async setPaymentInterfaceStatus(paymentId: string, version: number, succeeded: boolean): Promise<void> {
+    const cfg = getConfig();
+    const token = await paymentSDK.ctAuthorizationService.getAccessToken();
+    const res = await fetch(`${cfg.apiUrl}/${cfg.projectKey}/payments/${paymentId}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        version,
+        actions: [
+          { action: 'setStatusInterfaceCode', interfaceCode: succeeded ? 'SUCCESS' : 'FAILURE' },
+          {
+            action: 'setStatusInterfaceText',
+            interfaceText: succeeded ? 'Qantas Points burned' : 'Qantas Points burn failed',
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) {
+      throw new Error(`setStatus HTTP ${res.status}`);
+    }
   }
 
   /**
