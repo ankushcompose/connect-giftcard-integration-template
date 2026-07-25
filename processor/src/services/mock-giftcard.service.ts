@@ -232,6 +232,34 @@ export class MockGiftCardService extends AbstractGiftCardService {
       amount: redeemAmount,
     };
 
+    // ORDERING OBSERVATION (staging-only, temporary, best-effort, READ-ONLY):
+    // right before the burn, record the OTHER payments on the cart + their
+    // transaction states, to learn whether the Adyen card is already authorized
+    // when commercetools asks us to burn. This decides how to enforce "burn only
+    // after the card is authorized" (FOR0001-416). Remove once confirmed.
+    if (getConfig().qantasEnv !== 'live') {
+      try {
+        const freshCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
+        const others = (freshCart.paymentInfo?.payments ?? []).filter((ref) => ref.id !== ctPayment.id);
+        const observed = await Promise.all(
+          others.map(async (ref) => {
+            const other = await this.ctPaymentService.getPayment({ id: ref.id });
+            return {
+              method: other.paymentMethodInfo?.method,
+              paymentInterface: other.paymentMethodInfo?.paymentInterface,
+              transactions: (other.transactions ?? []).map((t) => `${t.type}:${t.state}`),
+            };
+          }),
+        );
+        log.info('[qantas] cart payments at burn time (ordering observation)', {
+          otherPaymentCount: others.length,
+          otherPayments: observed,
+        });
+      } catch (err) {
+        log.warn('[qantas] ordering observation failed (non-fatal)', { error: String(err).slice(0, 120) });
+      }
+    }
+
     const response: MockClientRedeemResponse = await QantasAPI().redeem(request);
 
     const txState = this.redemptionConverter.convertMockClientResultCode(response.resultCode);
