@@ -21,13 +21,11 @@ const VALID_CODE = `QF:${MEMBER}:${QUOTE}:2000:AUD`;
 const AMOUNT = { centAmount: 2000, currencyCode: 'AUD' };
 
 const stubFetch = (body: unknown, ok = true, status = 200) => {
-  const fn = jest
-    .fn<(input: string, init: RequestInit) => Promise<Response>>()
-    .mockResolvedValue({
-      ok,
-      status,
-      json: async () => body,
-    } as unknown as Response);
+  const fn = jest.fn<(input: string, init: RequestInit) => Promise<Response>>().mockResolvedValue({
+    ok,
+    status,
+    json: async () => body,
+  } as unknown as Response);
   (global as { fetch: unknown }).fetch = fn;
   return fn;
 };
@@ -56,6 +54,12 @@ describe('QantasGiftCardClient.balance', () => {
     const res = await QantasAPI().balance(`QF:${MEMBER}:${QUOTE}:2000:USD`);
     expect(res.code).toBe('CurrencyNotMatch');
   });
+
+  test('safety interlock: reports points unavailable on live so no real reservation is offered', async () => {
+    const { QantasAPI } = loadClient({ ...CONFIGURED, QANTAS_ENV: 'production' });
+    const res = await QantasAPI().balance(VALID_CODE);
+    expect(res.code).toBe('NotFound');
+  });
 });
 
 describe('QantasGiftCardClient.redeem', () => {
@@ -65,6 +69,39 @@ describe('QantasGiftCardClient.redeem', () => {
     const res = await QantasAPI().redeem({ code: VALID_CODE, amount: AMOUNT });
     expect(res.resultCode).toBe('FAILURE');
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test('safety interlock: refuses to burn real points on live and never calls the gateway', async () => {
+    const { QantasAPI } = loadClient({ ...CONFIGURED, QANTAS_ENV: 'production' });
+    const fetchSpy = stubFetch({ transactionNumber: '300000204909', pointsValueInDollars: 20 });
+    const res = await QantasAPI().redeem({ code: VALID_CODE, amount: AMOUNT });
+    expect(res.resultCode).toBe('FAILURE');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test('safety interlock: the go-live switch ALONE (without deferred burn) stays blocked on live', async () => {
+    const { QantasAPI } = loadClient({
+      ...CONFIGURED,
+      QANTAS_ENV: 'production',
+      QANTAS_ALLOW_LIVE_BURN: 'true',
+    });
+    const fetchSpy = stubFetch({ transactionNumber: '300000204909', pointsValueInDollars: 20 });
+    const res = await QantasAPI().redeem({ code: VALID_CODE, amount: AMOUNT });
+    expect(res.resultCode).toBe('FAILURE');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test('safety interlock: only BOTH switches (deferred + go-live) let a covered burn proceed on live', async () => {
+    const { QantasAPI } = loadClient({
+      ...CONFIGURED,
+      QANTAS_ENV: 'production',
+      QANTAS_ALLOW_LIVE_BURN: 'true',
+      QANTAS_DEFERRED_BURN: 'true',
+    });
+    const fetchSpy = stubFetch({ transactionNumber: '300000204909', pointsValueInDollars: 20 });
+    const res = await QantasAPI().redeem({ code: VALID_CODE, amount: AMOUNT });
+    expect(res.resultCode).toBe('SUCCESS');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   test('fails closed on a non-2xx gateway response', async () => {

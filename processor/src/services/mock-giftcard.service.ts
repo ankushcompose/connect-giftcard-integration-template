@@ -5,6 +5,7 @@ import {
   statusHandler,
   CommercetoolsOrderService,
   ErrorGeneral,
+  Payment,
 } from '@commercetools/connect-payments-sdk';
 import {
   CancelPaymentRequest,
@@ -32,6 +33,7 @@ import { MockCustomError } from '../errors/mock-api.error';
 import { BalanceConverter } from './converters/balance-converter';
 import { RedemptionConverter } from './converters/redemption-converter';
 import { computeCoverableAmount } from './coverable-amount';
+import { extractReservationCode, alreadyCaptured } from './deferred-burn';
 
 import packageJSON from '../../package.json';
 import { log } from '../libs/logger';
@@ -227,6 +229,15 @@ export class MockGiftCardService extends AbstractGiftCardService {
       paymentId: ctPayment.id,
     });
 
+    // DEFERRED BURN (FOR0001-416): when enabled, do NOT burn now. Record the
+    // reservation as a Success Authorization (the reconciliation signal
+    // commercetools' authorization-based model expects) and stash the QF code so
+    // capturePayment() can perform the real, irreversible burn AFTER the card is
+    // authorised. This is the "take points only after the card clears" ordering.
+    if (getConfig().qantasDeferredBurn) {
+      return this.reserveGiftCard(ctPayment, redeemCode);
+    }
+
     const request: MockClientRedeemRequest = {
       code: redeemCode,
       amount: redeemAmount,
@@ -313,6 +324,114 @@ export class MockGiftCardService extends AbstractGiftCardService {
   }
 
   /**
+   * DEFERRED BURN — reserve step. Records a Success Authorization on the gift-card
+   * payment (so commercetools reduces the card + creates the order) and stashes
+   * the QF reservation code as its interactionId. No points are burned here; the
+   * real burn runs in capturePayment() once the card is authorised.
+   */
+  private async reserveGiftCard(ctPayment: Payment, redeemCode: string): Promise<RedeemResponseDTO> {
+    const reserved = await this.ctPaymentService.updatePayment({
+      id: ctPayment.id,
+      transaction: {
+        type: 'Authorization',
+        amount: ctPayment.amountPlanned,
+        interactionId: redeemCode,
+        state: 'Success',
+      },
+    });
+    log.info('[qantas] points reserved (deferred burn) — awaiting card authorisation before burning');
+    return this.redemptionConverter.convert({
+      redemptionResult: {
+        resultCode: 'SUCCESS',
+        code: redeemCode,
+        amount: {
+          centAmount: ctPayment.amountPlanned.centAmount,
+          currencyCode: ctPayment.amountPlanned.currencyCode,
+        },
+      },
+      createPaymentResult: reserved,
+    });
+  }
+
+  /**
+   * DEFERRED BURN — capture step. Performs the REAL, irreversible Qantas burn from
+   * the reservation stashed at redeem time. Idempotent and fail-closed via the
+   * client's safety interlock.
+   *
+   * ASSUMPTION (pending live confirmation): commercetools invokes capture only
+   * AFTER the card is authorised. That is the documented authorization-then-
+   * capture model, but it must be verified on a staging deploy before real burns.
+   *
+   * PRE-LIVE HARDENING (must resolve before real member burns — do NOT enable the
+   * live switches until then):
+   *  1. CONCURRENCY: `alreadyCaptured` is a check-then-act, not an atomic claim. A
+   *     retried/overlapping capture could pass the check and burn twice. Add an
+   *     optimistic-concurrency claim on the payment `version` (and/or a stable
+   *     idempotency key to the gateway) before calling the burn.
+   *  2. CARD-AUTH ASSERTION: this does not itself confirm the sibling CARD payment
+   *     is Authorization:Success — it trusts commercetools' capture timing. Add a
+   *     defense-in-depth check of the card leg before burning (belt and braces).
+   */
+  private async captureGiftCardBurn(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse> {
+    const { payment, amount } = request;
+
+    // At-least-once capture delivery: if the burn already succeeded, don't burn
+    // again — just approve.
+    if (alreadyCaptured(payment)) {
+      log.info('[qantas] capture skipped — points already burned (idempotent)');
+      return { outcome: PaymentModificationStatus.APPROVED, pspReference: payment.interfaceId || '' };
+    }
+
+    const code = extractReservationCode(payment);
+    if (!code) {
+      log.error('[qantas] capture failed: no Qantas reservation found on the payment');
+      return { outcome: PaymentModificationStatus.REJECTED, pspReference: '' };
+    }
+
+    const response = await QantasAPI().redeem({ code, amount });
+    const txState = this.redemptionConverter.convertMockClientResultCode(response.resultCode);
+
+    if (response.resultCode !== 'SUCCESS') {
+      // The card is already authorised but the burn did not confirm. Most failure
+      // branches burn nothing (bad config, interlock refusal, invalid code, gateway
+      // rejection), but an ambiguous 2xx/coverage-shortfall CAN mean points moved —
+      // so record the failed Charge and flag it: verify with Qantas whether any
+      // points were taken before reconciling (Qantas has no automated refund/void).
+      // This is the accepted merchant-side residual risk of a post-auth burn.
+      await this.ctPaymentService
+        .updatePayment({
+          id: payment.id,
+          transaction: { type: 'Charge', amount, state: txState },
+        })
+        .catch((err) => {
+          log.warn('[qantas] could not record failed Charge (non-fatal)', { error: String(err).slice(0, 120) });
+        });
+      log.error('[qantas] capture failed: burn did not confirm — verify with Qantas if any points were taken', {
+        paymentId: payment.id,
+      });
+      return { outcome: PaymentModificationStatus.REJECTED, pspReference: '' };
+    }
+
+    const captured = await this.ctPaymentService.updatePayment({
+      id: payment.id,
+      pspReference: response.redemptionReference,
+      transaction: {
+        type: 'Charge',
+        amount,
+        interactionId: response.redemptionReference,
+        state: 'Success',
+      },
+    });
+    void this.setPaymentInterfaceStatus(captured.id, captured.version, true).catch((err) => {
+      log.warn('[qantas] could not set payment status code (non-fatal)', { error: String(err).slice(0, 120) });
+    });
+    log.info('[qantas] capture success — points burned after card authorisation', {
+      paymentId: payment.id,
+    });
+    return { outcome: PaymentModificationStatus.APPROVED, pspReference: response.redemptionReference || '' };
+  }
+
+  /**
    * Set the payment's PSP status code + human-readable text directly on
    * commercetools — the payments SDK's `updatePayment` does not expose
    * `paymentStatus`. The formal "Payment state" is a separate workflow State
@@ -356,6 +475,12 @@ export class MockGiftCardService extends AbstractGiftCardService {
    * @returns Promise with mocking data containing operation status and PSP reference
    */
   async capturePayment(request: CapturePaymentRequest): Promise<PaymentProviderModificationResponse> {
+    // DEFERRED BURN (FOR0001-416): capture is where the real burn happens — it runs
+    // after the card is authorised (assumption, pending live confirmation). Off by
+    // default → keep the template's unsupported stub.
+    if (getConfig().qantasDeferredBurn) {
+      return this.captureGiftCardBurn(request);
+    }
     throw new ErrorGeneral('operation not supported', {
       fields: {
         pspReference: request.payment.interfaceId,

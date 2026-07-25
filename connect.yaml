@@ -1,6 +1,45 @@
 deployAs:
   - name: enabler
     applicationType: assets
+  - name: event
+    applicationType: event
+    endpoint: /event
+    scripts:
+      postDeploy: npm install && npm run build && npm run connector:post-deploy
+      preUndeploy: npm install && npm run build && npm run connector:pre-undeploy
+    configuration:
+      standardConfiguration:
+        - key: CTP_PROJECT_KEY
+          description: commercetools project key
+          required: true
+        - key: CTP_AUTH_URL
+          description: commercetools Auth URL
+          required: true
+          default: https://auth.europe-west1.gcp.commercetools.com
+        - key: CTP_API_URL
+          description: commercetools API URL
+          required: true
+          default: https://api.europe-west1.gcp.commercetools.com
+        - key: CTP_CHECKOUT_URL
+          description: commercetools Checkout URL (used for the Payment Intents capture call)
+          required: true
+          default: https://checkout.europe-west1.gcp.commercetools.com
+        - key: CTP_CLIENT_ID
+          description: >-
+            commercetools client ID with manage_subscriptions,
+            manage_checkout_payment_intents, view_orders & view_payments scopes
+          required: true
+        - key: QANTAS_DEFERRED_BURN
+          description: >-
+            Must match the processor's value. When "true" this event app triggers
+            the gift-card capture after the card authorises; when "false" it does
+            nothing.
+          required: false
+          default: "false"
+      securedConfiguration:
+        - key: CTP_CLIENT_SECRET
+          description: commercetools client secret
+          required: true
   - name: processor
     applicationType: service
     endpoint: /
@@ -39,6 +78,22 @@ deployAs:
           description: Qantas Points environment; "production" for live, anything else uses staging
           required: false
           default: stg
+        - key: QANTAS_ALLOW_LIVE_BURN
+          description: >-
+            SAFETY INTERLOCK — leave "false" until the deferred "take points only
+            after the card is authorised" flow is built and verified. While
+            "false", real (live) Qantas Points can never be burned (fail-closed);
+            staging is unaffected. Set to "true" only as the deliberate go-live switch.
+          required: false
+          default: "false"
+        - key: QANTAS_DEFERRED_BURN
+          description: >-
+            When "true", points are only RESERVED at checkout and the actual
+            (irreversible) burn happens after the card is authorised — the safe
+            "take points only after the card clears" ordering. Leave "false" (the
+            current proven behaviour) until the deferred flow is tested on staging.
+          required: false
+          default: "false"
         - key: QANTAS_TERMINAL_ID
           description: Stable POS terminal label sent with each burn
           required: false

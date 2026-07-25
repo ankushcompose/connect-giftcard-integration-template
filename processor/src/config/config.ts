@@ -16,6 +16,22 @@ export const config = {
   // Qantas Points POS gateway (real burn). Env selects staging vs live; the token
   // (Basic auth) + partner-forward header are SECURED config, read only server-side.
   qantasEnv: (process.env.QANTAS_ENV === 'production' ? 'live' : 'stg') as 'stg' | 'live',
+  // SAFETY INTERLOCK (FOR0001-416): a Qantas burn is IRREVERSIBLE and has no
+  // wired refund/void, and commercetools sequences the card and gift-card
+  // payments asynchronously — so the current flow cannot guarantee the burn only
+  // happens after the card clears. Real customer points must therefore NOT be
+  // burnable until the deferred "take points after the card is authorised" flow
+  // is built and verified. This flag defaults to false (fail-closed): on live,
+  // the burn is refused unless someone deliberately sets it, which is the
+  // conscious "the safe flow now exists" switch. Staging (QANTAS_ENV≠production)
+  // is unaffected and keeps working for testing with test points.
+  qantasAllowLiveBurn: process.env.QANTAS_ALLOW_LIVE_BURN === 'true',
+  // DEFERRED BURN (FOR0001-416): when true, redeem only RESERVES the points and
+  // the irreversible burn is moved to capturePayment(), which commercetools
+  // invokes only AFTER the card is authorised — i.e. "take points only after the
+  // card clears". Default false keeps the current (proven on staging) behaviour,
+  // so the demo is unaffected until this is deliberately switched on to test.
+  qantasDeferredBurn: process.env.QANTAS_DEFERRED_BURN === 'true',
   qantasPosGatewayToken: process.env.QANTAS_POS_GATEWAY_TOKEN || '',
   qantasForwardHeader: process.env.QANTAS_FORWARD_HEADER || '',
   qantasTerminalId: process.env.QANTAS_TERMINAL_ID || 'fw-web',

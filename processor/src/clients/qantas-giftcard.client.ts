@@ -81,6 +81,8 @@ export class QantasGiftCardClient {
   private forwardHeader: string;
   private terminalId: string;
   private env: 'stg' | 'live';
+  private allowLiveBurn: boolean;
+  private deferredBurn: boolean;
 
   public constructor(opts: { currency: string }) {
     const cfg = getConfig();
@@ -90,6 +92,21 @@ export class QantasGiftCardClient {
     this.forwardHeader = cfg.qantasForwardHeader;
     this.terminalId = cfg.qantasTerminalId;
     this.env = cfg.qantasEnv;
+    this.allowLiveBurn = cfg.qantasAllowLiveBurn;
+    this.deferredBurn = cfg.qantasDeferredBurn;
+  }
+
+  /**
+   * SAFETY INTERLOCK (FOR0001-416): true unless a REAL customer-points burn is
+   * currently permitted. A burn is irreversible with no wired refund, so a live
+   * burn is allowed ONLY when BOTH switches are on: QANTAS_ALLOW_LIVE_BURN (the
+   * deliberate go-live decision) AND QANTAS_DEFERRED_BURN (the safe "burn only
+   * after the card clears" ordering). This coupling means flipping the go-live
+   * switch alone can never re-enable the unsafe burn-before-card path. Staging is
+   * always allowed (test points, no real value at risk).
+   */
+  private liveBurnBlocked(): boolean {
+    return this.env === 'live' && !(this.allowLiveBurn && this.deferredBurn);
   }
 
   public async healthcheck(): Promise<MockClientStatusResponse> {
@@ -102,6 +119,15 @@ export class QantasGiftCardClient {
   }
 
   public async balance(code: string): Promise<MockClientBalanceResponse> {
+    // Defense in depth: on live, before the safe flow exists, don't even let a
+    // member reserve real points — the widget treats this as unusable and asks
+    // for another payment method, so no real reservation/burn is ever attempted.
+    if (this.liveBurnBlocked()) {
+      return {
+        message: 'Qantas Points are not available yet.',
+        code: GiftCardCodeType.NOT_FOUND,
+      };
+    }
     const parsed = parseQantasCode(code);
     if (!parsed) {
       return {
@@ -130,6 +156,18 @@ export class QantasGiftCardClient {
       code: request.code,
       amount: request.amount,
     };
+
+    // SAFETY INTERLOCK (FOR0001-416): refuse to burn REAL customer points until
+    // the deferred "burn only after the card clears" flow exists. Placed first,
+    // before the gateway call, so no irreversible burn can ever run on live while
+    // this is unresolved. Fail-closed → commercetools falls back to charging the
+    // card, so the customer keeps their points and is never left stranded.
+    if (this.liveBurnBlocked()) {
+      log.error(
+        '[qantas] redeem refused: live burn is disabled (safety interlock) — a live burn needs BOTH QANTAS_DEFERRED_BURN and QANTAS_ALLOW_LIVE_BURN set',
+      );
+      return failure;
+    }
 
     if (!this.token || !this.forwardHeader) {
       // Fail-closed: never attempt a burn we can't authenticate.

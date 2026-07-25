@@ -1,0 +1,25 @@
+{
+  "name": "event",
+  "version": "0.1.0",
+  "description": "Qantas gift-card deferred-capture event application",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node dist/main.js",
+    "build": "rm -rf dist && tsc",
+    "dev": "ts-node src/main.ts",
+    "lint": "prettier --check \"**/**/*.{ts,js,json}\"",
+    "lint:fix": "prettier --write \"**/**/*.{ts,js,json}\"",
+    "connector:post-deploy": "node dist/connectors/post-deploy.js",
+    "connector:pre-undeploy": "node dist/connectors/pre-undeploy.js"
+  },
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "fastify": "5.8.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "prettier": "3.8.3",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  }
+}
