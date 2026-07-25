@@ -41,4 +41,63 @@ describe('computeCoverableAmount — Qantas Points exclude delivery', () => {
       currencyCode: 'NZD',
     });
   });
+
+  test('delivery modelled as a custom line item → subtracts it (real fw-fed cart)', () => {
+    // $3,999 product + $29 delivery = $4,028 payable → coverable = $3,999.
+    const cart = {
+      customLineItems: [
+        { slug: 'crown-posture-mattress-0', totalPrice: { centAmount: 399900 } },
+        { slug: 'delivery-and-charges', totalPrice: { centAmount: 2900 } },
+      ],
+    };
+    expect(computeCoverableAmount(cart, AUD(402800))).toEqual(AUD(399900));
+  });
+
+  test('product custom line items are NOT subtracted — only delivery-and-charges is', () => {
+    const cart = {
+      customLineItems: [
+        { slug: 'mattress-0', totalPrice: { centAmount: 300000 } },
+        { slug: 'pillow-1', totalPrice: { centAmount: 9900 } },
+        { slug: 'delivery-and-charges', totalPrice: { centAmount: 5900 } },
+      ],
+    };
+    // payable $3,158 − $59 delivery = $3,099 coverable (products only).
+    expect(computeCoverableAmount(cart, AUD(315800))).toEqual(AUD(309900));
+  });
+
+  test('collapsed "order-total" cart (no delivery line) → coverable equals payable', () => {
+    // Degenerate fallback: itemisation failed, delivery cannot be separated.
+    const cart = { customLineItems: [{ slug: 'order-total', totalPrice: { centAmount: 402800 } }] };
+    expect(computeCoverableAmount(cart, AUD(402800))).toEqual(AUD(402800));
+  });
+
+  test('subtracts BOTH native shipping and a delivery custom line item', () => {
+    const cart = {
+      shippingInfo: { price: { centAmount: 1000 } },
+      customLineItems: [{ slug: 'delivery-and-charges', totalPrice: { centAmount: 2000 } }],
+    };
+    expect(computeCoverableAmount(cart, AUD(60000))).toEqual(AUD(57000));
+  });
+
+  test('reads the delivery line total (totalPrice), not its unit money', () => {
+    // qty 2: unit money 1000, line total 2000 — the code must subtract 2000, not 1000.
+    const cart = {
+      customLineItems: [
+        { slug: 'delivery-and-charges', money: { centAmount: 1000 }, quantity: 2, totalPrice: { centAmount: 2000 } },
+      ],
+    };
+    expect(computeCoverableAmount(cart, AUD(60000))).toEqual(AUD(58000));
+  });
+
+  test('a product whose slug merely starts with the delivery slug is NOT excluded (exact match)', () => {
+    // A product named "Delivery and charges" slugifies to "delivery-and-charges-0"
+    // (name + "-" + index), which is NOT the exact delivery slug, so it stays coverable.
+    const cart = {
+      customLineItems: [
+        { slug: 'delivery-and-charges-0', totalPrice: { centAmount: 10000 } },
+        { slug: 'delivery-and-charges', totalPrice: { centAmount: 2900 } },
+      ],
+    };
+    expect(computeCoverableAmount(cart, AUD(12900))).toEqual(AUD(10000));
+  });
 });

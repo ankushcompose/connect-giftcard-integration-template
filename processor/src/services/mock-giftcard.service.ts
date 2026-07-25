@@ -180,10 +180,17 @@ export class MockGiftCardService extends AbstractGiftCardService {
 
     // COVERAGE RULE (server-enforced, before any burn): Qantas Points cover the
     // goods only — the delivery fee is ALWAYS paid by another method (card). So
-    // a redemption may cover up to the payable amount MINUS shipping, and no
+    // a redemption may cover up to the payable amount MINUS delivery, and no
     // more (points reaching the full ex-delivery amount is allowed). Placed
     // BEFORE the payment/burn side effects so no points are spent on a rejected
     // redemption (fail-closed).
+    // LIMITATION: coverable = payable − delivery only when delivery is separable
+    // on the cart. The fw-fed cart collapses to a single "order-total" custom
+    // line item (no `delivery-and-charges` line) for an empty cart OR when a
+    // cart-level discount drops the total below the itemised sum. In that case
+    // delivery cannot be isolated, coverable == payable, and points COULD cover
+    // delivery. The durable fix is a native CT shipping method (see
+    // coverable-amount.ts) — until then, avoid whole-order discounts with points.
     const coverable = computeCoverableAmount(ctCart, amountPlanned);
     if (redeemAmount.centAmount <= 0 || redeemAmount.centAmount > coverable.centAmount) {
       throw new MockCustomError({
