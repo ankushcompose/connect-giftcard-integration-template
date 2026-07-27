@@ -46,6 +46,8 @@ export interface CaptureDecision {
   captureAmount: { centAmount: number; currencyCode: string } | null;
   cardAuthorized: boolean;
   alreadyCaptured: boolean;
+  /** Reservation was released (cancelled) — capturing would double-charge. */
+  released: boolean;
   shouldCapture: boolean;
 }
 
@@ -92,6 +94,16 @@ const isCaptured = (giftCard: PaymentLike | null): boolean =>
   Boolean(giftCard) && (giftCard!.transactions ?? []).some((t) => t.type === 'Charge' && t.state === 'Success');
 
 /**
+ * True when the reservation was RELEASED (successful CancelAuthorization) — e.g.
+ * commercetools reversed this leg after a declined card. Capturing after a release
+ * DOUBLE-CHARGES the customer: the released gift card no longer reduces the cart, so
+ * the card takes the full total, and the burn spends the points on top. Fail-closed.
+ */
+const isReleased = (giftCard: PaymentLike | null): boolean =>
+  Boolean(giftCard) &&
+  (giftCard!.transactions ?? []).some((t) => t.type === 'CancelAuthorization' && t.state === 'Success');
+
+/**
  * Decide whether to trigger the gift-card capture for this order. Capture only
  * when: a gift-card payment exists, the card leg is authorised, and the gift card
  * has not already been captured (guards against at-least-once event delivery).
@@ -106,11 +118,14 @@ export const decideCapture = (payments: PaymentLike[]): CaptureDecision => {
       : null;
   const cardAuthorized = isCardLegAuthorized(payments, giftCardPaymentId);
   const alreadyCaptured = isCaptured(giftCard);
+  const released = isReleased(giftCard);
   return {
     giftCardPaymentId,
     captureAmount,
     cardAuthorized,
     alreadyCaptured,
-    shouldCapture: Boolean(giftCardPaymentId) && Boolean(captureAmount) && cardAuthorized && !alreadyCaptured,
+    released,
+    shouldCapture:
+      Boolean(giftCardPaymentId) && Boolean(captureAmount) && cardAuthorized && !alreadyCaptured && !released,
   };
 };

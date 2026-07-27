@@ -38,6 +38,7 @@ import {
   extractReservationCode,
   alreadyCaptured,
   planReversal,
+  reservationReleased,
   findHeldRedemption,
   type HeldRedemption,
 } from './deferred-burn';
@@ -429,6 +430,16 @@ export class MockGiftCardService extends AbstractGiftCardService {
     if (alreadyCaptured(payment)) {
       log.info('[qantas] capture skipped — points already burned (idempotent)');
       return { outcome: PaymentModificationStatus.APPROVED, pspReference: payment.interfaceId || '' };
+    }
+
+    // RELEASED RESERVATION — never burn (fail-closed). commercetools reversed this
+    // leg (declined card), so it no longer counts the gift card and the FULL amount
+    // falls to the card. Burning now charges the customer twice.
+    if (reservationReleased(payment)) {
+      log.error('[qantas] capture REFUSED — reservation was released; burning now would double-charge', {
+        paymentId: payment.id,
+      });
+      return { outcome: PaymentModificationStatus.REJECTED, pspReference: payment.interfaceId || '' };
     }
 
     const code = extractReservationCode(payment);

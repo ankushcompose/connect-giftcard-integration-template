@@ -58,6 +58,19 @@ export type ReversalPlan = 'release-reservation' | 'refund-burned-points';
 export const planReversal = (payment: Payment): ReversalPlan =>
   alreadyCaptured(payment) ? 'refund-burned-points' : 'release-reservation';
 
+/**
+ * True when the reservation has been RELEASED (a successful CancelAuthorization),
+ * i.e. commercetools reversed this leg — typically because the card was declined.
+ *
+ * MUST block the burn. Once released, commercetools stops counting the gift card
+ * toward the cart, so the FULL amount falls to the card. Burning anyway charges the
+ * customer twice: the card takes the whole total AND the points are spent. Observed
+ * live on 2026-07-27 (order 16:23): card $449 authorised while $420 of points burned
+ * moments after the hold was cancelled. Fail-closed — a released hold is never burned.
+ */
+export const reservationReleased = (payment: Payment): boolean =>
+  (payment.transactions ?? []).some((t) => t.type === 'CancelAuthorization' && t.state === 'Success');
+
 /** Payment method this connector writes on its gift-card payments. */
 export const GIFT_CARD_METHOD = 'qantasburn';
 
@@ -89,6 +102,9 @@ export const findHeldRedemption = (payments: Payment[]): HeldRedemption | null =
   for (const payment of payments) {
     if (payment.paymentMethodInfo?.method !== GIFT_CARD_METHOD) continue;
     if (alreadyCaptured(payment)) continue;
+    // A released hold is no longer applied — restoring it would show the shopper
+    // points that commercetools has already stopped counting.
+    if (reservationReleased(payment)) continue;
     const authorised = (payment.transactions ?? []).some((t) => t.type === 'Authorization' && t.state === 'Success');
     if (!authorised) continue;
     const code = extractReservationCode(payment);

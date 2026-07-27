@@ -1,6 +1,7 @@
 import { describe, test, expect } from '@jest/globals';
 import { Payment } from '@commercetools/connect-payments-sdk';
 import {
+  reservationReleased,
   extractReservationCode,
   alreadyCaptured,
   planReversal,
@@ -131,5 +132,37 @@ describe('findHeldRedemption', () => {
 
   test('returns null for an empty cart', () => {
     expect(findHeldRedemption([])).toBeNull();
+  });
+});
+
+describe('reservationReleased — the double-charge guard', () => {
+  const gc = (transactions: unknown[]): Payment =>
+    ({
+      id: 'p1',
+      paymentMethodInfo: { method: 'qantasburn' },
+      amountPlanned: { centAmount: 42000, currencyCode: 'AUD' },
+      transactions,
+    }) as unknown as Payment;
+
+  test('true once the hold has been cancelled', () => {
+    expect(reservationReleased(gc([{ type: 'CancelAuthorization', state: 'Success' }]))).toBe(true);
+  });
+
+  test('false for a hold that is still live', () => {
+    expect(reservationReleased(gc([{ type: 'Authorization', state: 'Success', interactionId: CODE }]))).toBe(false);
+  });
+
+  test('false when the cancel itself failed', () => {
+    expect(reservationReleased(gc([{ type: 'CancelAuthorization', state: 'Failure' }]))).toBe(false);
+  });
+
+  // Live 2026-07-27: hold cancelled at 16:23, burned at 16:23 anyway, card took the
+  // full $449 — the customer paid twice. A released hold must never be re-offered.
+  test('a released hold is NOT restorable as applied', () => {
+    const released = gc([
+      { type: 'Authorization', state: 'Success', interactionId: CODE },
+      { type: 'CancelAuthorization', state: 'Success' },
+    ]);
+    expect(findHeldRedemption([released])).toBeNull();
   });
 });
