@@ -28,6 +28,15 @@ type WidgetConfig = {
   // The full payable (goods + delivery), used only to show the correct "still
   // to pay by card" figure — which always includes the delivery fee.
   totalAmount: Amount;
+  // Present when a redemption is ALREADY held on this cart (the storefront reopened
+  // it after a declined card). The widget restores the applied state from this
+  // instead of making the member sign in and reserve all over again.
+  applied?: {
+    paymentId: string;
+    code: string;
+    centAmount: number;
+    currencyCode: string;
+  };
 };
 
 interface QantasPaymentActions {
@@ -71,6 +80,11 @@ const COPY = {
   body: 'Qantas Frequent Flyer members can put points towards this order. Sign in with Qantas and choose how many points to use; the rest is paid by card.',
   applied: (points: string, dollars: string, remaining: string) =>
     `${points} Qantas Points applied (${dollars}). ${remaining} still to pay by card.`,
+  // Shown when the points were applied earlier in this checkout and survived a
+  // failed payment. The points COUNT isn't stored on the cart — only the dollar
+  // value — so this wording deliberately states the value, not the points.
+  restored: (dollars: string, remaining: string) =>
+    `Qantas Points applied (${dollars}) — still on this order. ${remaining} still to pay by card.`,
   // Points cover the goods only — the delivery fee is always paid by card
   // (shown for an empty pick or one that exceeds the ex-delivery amount).
   tooMuch:
@@ -241,6 +255,14 @@ export class FormComponent extends DefaultComponent {
       });
     }
 
+    // A reservation already sits on this cart — restore the applied state and skip
+    // the sign-in button entirely. Loading the Qantas widget here would invite a
+    // SECOND reservation on top of the one the member already holds.
+    if (conf.applied) {
+      this._restoreApplied(conf.applied, conf.totalAmount.centAmount);
+      return;
+    }
+
     try {
       await this._loadScript(QANTAS_WIDGET_SRC[conf.env] ?? QANTAS_WIDGET_SRC.stg);
     } catch {
@@ -260,8 +282,7 @@ export class FormComponent extends DefaultComponent {
           Client: { id: conf.clientId, name: conf.clientName },
           // Reserve against the amount left to pay (dollars); the member picks
           // how much within that cap.
-          payment: (actions: QantasPaymentActions) =>
-            actions.createQuote(conf.amount.centAmount / 100, []),
+          payment: (actions: QantasPaymentActions) => actions.createQuote(conf.amount.centAmount / 100, []),
           onAuthorize: (data: QantasAuthorizeData) => this._onAuthorize(data),
           onError: (message: string) => this._onWidgetError(message),
         },
@@ -336,6 +357,33 @@ export class FormComponent extends DefaultComponent {
     void this.giftcardOptions?.onValueChange?.(true);
   }
 
+  // Re-present a reservation that is already held on the cart. Puts the SAME code
+  // back into the hidden field so commercetools re-submits it (the processor is
+  // idempotent for a code already held, so this cannot double the redemption), shows
+  // the applied line, and hides the sign-in prompt.
+  private _restoreApplied(applied: NonNullable<WidgetConfig['applied']>, totalCents: number): void {
+    getInput(fieldIds.code).value = applied.code;
+    hideError(fieldIds.code);
+
+    const locale = this.baseOptions.locale || 'en-AU';
+    const money = (dollars: number) =>
+      new Intl.NumberFormat(locale, { style: 'currency', currency: applied.currencyCode || 'AUD' }).format(dollars);
+    const dollars = applied.centAmount / 100;
+    const remaining = money((totalCents - applied.centAmount) / 100);
+    const appliedEl = document.getElementById('qantas-points-applied');
+    if (appliedEl) {
+      appliedEl.textContent = COPY.restored(money(dollars), remaining);
+      appliedEl.removeAttribute('hidden');
+    }
+    // The sign-in prompt and button are meaningless once points are applied.
+    for (const id of ['qantas-points-button', 'qantas-points-body']) {
+      document.getElementById(id)?.setAttribute('hidden', '');
+    }
+
+    this.applied = true;
+    void this.giftcardOptions?.onValueChange?.(true);
+  }
+
   // The Qantas widget reported an error AFTER it loaded. If the member already
   // has a valid reservation applied, keep it (a benign close/error must not wipe
   // it); otherwise surface a truthful "try again" message (not "couldn't load").
@@ -384,7 +432,7 @@ export class FormComponent extends DefaultComponent {
     return `
         <div class="${inputFieldStyles.wrapper}">
           <div class="${inputFieldStyles.paymentForm}">
-            <p>${COPY.body}</p>
+            <p id="qantas-points-body">${COPY.body}</p>
             <div id="qantas-points-button" aria-label="${COPY.ariaLabel}"></div>
             <p id="qantas-points-applied" role="status" aria-live="polite" hidden></p>
             <p id="qantas-points-unavailable" role="status" aria-live="polite" hidden></p>

@@ -22,12 +22,7 @@ $color-style-secondary-main: #555557;
 
 // Error
 $color-style-error-active: #ffc5c5;
-$color-style-error-background: linear-gradient(
-    0deg,
-    rgba(255, 255, 255, 0.9),
-    rgba(255, 255, 255, 0.9)
-  ),
-  #d32f2f;
+$color-style-error-background: linear-gradient(0deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.9)), #d32f2f;
 $color-style-error-dark: #b52323;
 $color-style-error-hover: #fbdada;
 $color-style-error-main: #d32f2f;

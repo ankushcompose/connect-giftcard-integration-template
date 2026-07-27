@@ -1,6 +1,11 @@
 import { describe, test, expect } from '@jest/globals';
 import { Payment } from '@commercetools/connect-payments-sdk';
-import { extractReservationCode, alreadyCaptured, planReversal } from '../src/services/deferred-burn';
+import {
+  extractReservationCode,
+  alreadyCaptured,
+  planReversal,
+  findHeldRedemption,
+} from '../src/services/deferred-burn';
 
 const CODE = 'QF:1900009653:ec3efcc4-b6d1-4953-b921-6fce2c3b461d:2000:AUD';
 
@@ -67,5 +72,64 @@ describe('planReversal', () => {
 
   test('a payment with no transactions releases rather than claiming a failed refund', () => {
     expect(planReversal(payment([]))).toBe('release-reservation');
+  });
+});
+
+describe('findHeldRedemption', () => {
+  const giftCard = (transactions: unknown[], centAmount = 42000): Payment =>
+    ({
+      id: 'pay-gift-1',
+      paymentMethodInfo: { method: 'qantasburn' },
+      amountPlanned: { centAmount, currencyCode: 'AUD' },
+      transactions,
+    }) as unknown as Payment;
+
+  test('recovers a held reservation so the widget can show it as applied', () => {
+    const held = findHeldRedemption([giftCard([{ type: 'Authorization', state: 'Success', interactionId: CODE }])]);
+    expect(held).toEqual({ paymentId: 'pay-gift-1', code: CODE, centAmount: 42000, currencyCode: 'AUD' });
+  });
+
+  test('ignores a redemption whose burn already ran (not re-applyable)', () => {
+    const p = giftCard([
+      { type: 'Authorization', state: 'Success', interactionId: CODE },
+      { type: 'Charge', state: 'Success' },
+    ]);
+    expect(findHeldRedemption([p])).toBeNull();
+  });
+
+  test('ignores an immediate-burn Authorization carrying a Qantas transaction number', () => {
+    const p = giftCard([{ type: 'Authorization', state: 'Success', interactionId: '300000204909' }]);
+    expect(findHeldRedemption([p])).toBeNull();
+  });
+
+  test('ignores a failed Authorization', () => {
+    const p = giftCard([{ type: 'Authorization', state: 'Failure', interactionId: CODE }]);
+    expect(findHeldRedemption([p])).toBeNull();
+  });
+
+  test('ignores non-gift-card payments (e.g. the declined card)', () => {
+    const card = {
+      paymentMethodInfo: { method: 'scheme' },
+      amountPlanned: { centAmount: 2900, currencyCode: 'AUD' },
+      transactions: [{ type: 'Authorization', state: 'Failure' }],
+    } as unknown as Payment;
+    expect(findHeldRedemption([card])).toBeNull();
+  });
+
+  test('picks the held redemption out of a mixed cart', () => {
+    const card = {
+      paymentMethodInfo: { method: 'scheme' },
+      amountPlanned: { centAmount: 2900, currencyCode: 'AUD' },
+      transactions: [{ type: 'Authorization', state: 'Failure' }],
+    } as unknown as Payment;
+    const held = findHeldRedemption([
+      card,
+      giftCard([{ type: 'Authorization', state: 'Success', interactionId: CODE }]),
+    ]);
+    expect(held?.code).toBe(CODE);
+  });
+
+  test('returns null for an empty cart', () => {
+    expect(findHeldRedemption([])).toBeNull();
   });
 });

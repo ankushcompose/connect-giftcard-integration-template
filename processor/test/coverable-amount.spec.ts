@@ -16,10 +16,7 @@ describe('computeCoverableAmount — Qantas Points exclude delivery', () => {
 
   test('multi-shipping mode → subtracts the sum of every shipment price', () => {
     const cart = {
-      shipping: [
-        { shippingInfo: { price: { centAmount: 3000 } } },
-        { shippingInfo: { price: { centAmount: 2000 } } },
-      ],
+      shipping: [{ shippingInfo: { price: { centAmount: 3000 } } }, { shippingInfo: { price: { centAmount: 2000 } } }],
     };
     expect(computeCoverableAmount(cart, AUD(60000))).toEqual(AUD(55000));
   });

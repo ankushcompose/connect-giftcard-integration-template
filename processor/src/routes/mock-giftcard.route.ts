@@ -66,6 +66,17 @@ export const mockGiftCardServiceRoutes = async (
             env: Type.String(),
             amount: AmountSchema,
             totalAmount: AmountSchema,
+            // Present only when a redemption is already held on this cart (the
+            // storefront reopened it after a declined card), so the widget can
+            // restore the applied state instead of asking the member to re-apply.
+            applied: Type.Optional(
+              Type.Object({
+                paymentId: Type.String(),
+                code: Type.String(),
+                centAmount: Type.Integer(),
+                currencyCode: Type.String(),
+              }),
+            ),
           }),
         },
       },

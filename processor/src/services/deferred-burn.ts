@@ -57,3 +57,48 @@ export type ReversalPlan = 'release-reservation' | 'refund-burned-points';
 
 export const planReversal = (payment: Payment): ReversalPlan =>
   alreadyCaptured(payment) ? 'refund-burned-points' : 'release-reservation';
+
+/** Payment method this connector writes on its gift-card payments. */
+export const GIFT_CARD_METHOD = 'qantasburn';
+
+/** A redemption already held on the cart, recovered so the browser can show it. */
+export interface HeldRedemption {
+  /** commercetools Payment holding the reservation (used for idempotent redeem). */
+  paymentId: string;
+  code: string;
+  centAmount: number;
+  currencyCode: string;
+}
+
+/**
+ * Find a Qantas redemption already applied to this cart.
+ *
+ * The browser widget keeps "applied" in memory only, so when the payment step is
+ * rebuilt (e.g. after a declined card, where the storefront reopens the SAME cart)
+ * it restarts blank even though the redemption is still attached. This lets the
+ * enabler restore the applied state instead of asking the member to sign in again.
+ *
+ * Only a DEFERRED (held, not yet burned) reservation qualifies:
+ *  - a successful Authorization must exist, and
+ *  - its interactionId must be a `QF:` reservation code. In immediate-burn mode the
+ *    Authorization carries the Qantas transaction NUMBER instead, and those points
+ *    are already spent — re-presenting them as re-applyable would be wrong.
+ *  - a successful Charge means the burn already ran, so it is not re-applyable.
+ */
+export const findHeldRedemption = (payments: Payment[]): HeldRedemption | null => {
+  for (const payment of payments) {
+    if (payment.paymentMethodInfo?.method !== GIFT_CARD_METHOD) continue;
+    if (alreadyCaptured(payment)) continue;
+    const authorised = (payment.transactions ?? []).some((t) => t.type === 'Authorization' && t.state === 'Success');
+    if (!authorised) continue;
+    const code = extractReservationCode(payment);
+    if (!code || !code.startsWith('QF:')) continue;
+    return {
+      paymentId: payment.id,
+      code,
+      centAmount: payment.amountPlanned.centAmount,
+      currencyCode: payment.amountPlanned.currencyCode,
+    };
+  }
+  return null;
+};

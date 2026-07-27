@@ -6,6 +6,7 @@ import {
   CommercetoolsOrderService,
   ErrorGeneral,
   Payment,
+  Cart,
 } from '@commercetools/connect-payments-sdk';
 import {
   CancelPaymentRequest,
@@ -33,7 +34,13 @@ import { MockCustomError } from '../errors/mock-api.error';
 import { BalanceConverter } from './converters/balance-converter';
 import { RedemptionConverter } from './converters/redemption-converter';
 import { computeCoverableAmount } from './coverable-amount';
-import { extractReservationCode, alreadyCaptured, planReversal } from './deferred-burn';
+import {
+  extractReservationCode,
+  alreadyCaptured,
+  planReversal,
+  findHeldRedemption,
+  type HeldRedemption,
+} from './deferred-burn';
 
 import packageJSON from '../../package.json';
 import { log } from '../libs/logger';
@@ -146,10 +153,12 @@ export class MockGiftCardService extends AbstractGiftCardService {
     env: string;
     amount: { centAmount: number; currencyCode: string };
     totalAmount: { centAmount: number; currencyCode: string };
+    applied?: HeldRedemption;
   }> {
     const cfg = getConfig();
     const ctCart = await this.ctCartService.getCart({ id: getCartIdFromContext() });
     const amountPlanned = await this.ctCartService.getPaymentAmount({ cart: ctCart });
+    const applied = await this.findHeldRedemptionOnCart(ctCart);
     // Points cover the goods only — delivery is always paid by card. The widget
     // reserves against the ex-delivery figure; the full total lets the checkout
     // UI show the correct "still to pay by card" amount (which includes delivery).
@@ -160,7 +169,30 @@ export class MockGiftCardService extends AbstractGiftCardService {
       env: cfg.qantasEnv,
       amount: { centAmount: coverable.centAmount, currencyCode: coverable.currencyCode },
       totalAmount: { centAmount: amountPlanned.centAmount, currencyCode: amountPlanned.currencyCode },
+      ...(applied ? { applied } : {}),
     };
+  }
+
+  /**
+   * A redemption already held on this cart, if any. The storefront reopens the SAME
+   * cart when a card is declined, so the reservation survives — but the browser
+   * widget's "applied" state does not. Returning it lets the enabler restore that
+   * state instead of asking the member to sign in and reserve all over again.
+   *
+   * Best-effort: any read failure yields "nothing applied", which just means the
+   * widget shows the sign-in button (the pre-existing behaviour). It must never
+   * fail /config, because that would break the whole payment method.
+   */
+  private async findHeldRedemptionOnCart(ctCart: Cart): Promise<HeldRedemption | null> {
+    try {
+      const refs = ctCart.paymentInfo?.payments ?? [];
+      if (refs.length === 0) return null;
+      const payments = await Promise.all(refs.map((ref) => this.ctPaymentService.getPayment({ id: ref.id })));
+      return findHeldRedemption(payments);
+    } catch (err) {
+      log.warn('[qantas] could not read held redemption (non-fatal)', { error: String(err).slice(0, 120) });
+      return null;
+    }
   }
 
   async redeem(opts: { data: RedeemRequestDTO }): Promise<RedeemResponseDTO> {
@@ -199,6 +231,23 @@ export class MockGiftCardService extends AbstractGiftCardService {
         message: 'Qantas Points cover the item total only; the delivery fee must be paid by another method.',
         code: 400,
         key: GiftCardCodeType.GENERIC_ERROR,
+      });
+    }
+
+    // IDEMPOTENCY (FOR0001-416): the enabler restores an already-held reservation
+    // after a declined card, so commercetools can submit the SAME code again. Never
+    // create a second gift-card payment for it — that would double the member's
+    // redemption. Return the reservation already on the cart instead.
+    const held = await this.findHeldRedemptionOnCart(ctCart);
+    if (held && held.code === redeemCode) {
+      log.info('[qantas] redeem skipped — this reservation is already held on the cart (idempotent)');
+      return this.redemptionConverter.convert({
+        redemptionResult: {
+          resultCode: 'SUCCESS',
+          code: held.code,
+          amount: { centAmount: held.centAmount, currencyCode: held.currencyCode },
+        },
+        createPaymentResult: await this.ctPaymentService.getPayment({ id: held.paymentId }),
       });
     }
 
