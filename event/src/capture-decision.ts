@@ -72,9 +72,31 @@ export const decodePubSubEvent = (body: unknown): CheckoutEventNotification | nu
 export const isPaymentAuthorizedEvent = (n: CheckoutEventNotification | null): boolean =>
   n?.notificationType === 'Event' && n?.type === 'CheckoutPaymentAuthorized';
 
-/** Find our gift-card (Qantas Burn) payment among the order's payments. */
-export const findGiftCardPayment = (payments: PaymentLike[]): PaymentLike | null =>
-  payments.find((p) => p.paymentMethodInfo?.method === QANTAS_GIFTCARD_METHOD) ?? null;
+/** True once a successful Charge exists on a gift-card payment (idempotency). */
+const hasCapture = (p: PaymentLike): boolean =>
+  (p.transactions ?? []).some((t) => t.type === 'Charge' && t.state === 'Success');
+
+/** True once the hold has been released (cancelled), so it must never be burned. */
+const hasRelease = (p: PaymentLike): boolean =>
+  (p.transactions ?? []).some((t) => t.type === 'CancelAuthorization' && t.state === 'Success');
+
+/**
+ * Find the gift-card (Qantas Burn) payment this event should act on.
+ *
+ * An order can carry MORE THAN ONE gift-card payment. A retry after a declined
+ * card leaves the released hold from the failed attempt alongside the live hold
+ * from the retry. Taking the first match picked the RELEASED one, correctly
+ * refused to burn it, and left the live hold uncaptured, so the points were never
+ * collected at all (observed on staging 2026-07-27, order CT-274026110700).
+ *
+ * Prefer a hold that is still capturable: not released and not already burned.
+ * Fall back to the first gift-card payment so the decision still reports a payment
+ * id when none is capturable, which keeps the "no capture triggered" log useful.
+ */
+export const findGiftCardPayment = (payments: PaymentLike[]): PaymentLike | null => {
+  const giftCards = payments.filter((p) => p.paymentMethodInfo?.method === QANTAS_GIFTCARD_METHOD);
+  return giftCards.find((p) => !hasRelease(p) && !hasCapture(p)) ?? giftCards[0] ?? null;
+};
 
 /**
  * The sibling CARD leg is authorised when SOME non-gift-card payment carries an
@@ -90,8 +112,7 @@ export const isCardLegAuthorized = (payments: PaymentLike[], giftCardPaymentId: 
   );
 
 /** True once a successful Charge exists on the gift-card payment (idempotency). */
-const isCaptured = (giftCard: PaymentLike | null): boolean =>
-  Boolean(giftCard) && (giftCard!.transactions ?? []).some((t) => t.type === 'Charge' && t.state === 'Success');
+const isCaptured = (giftCard: PaymentLike | null): boolean => Boolean(giftCard) && hasCapture(giftCard!);
 
 /**
  * True when the reservation was RELEASED (successful CancelAuthorization) — e.g.
@@ -99,9 +120,7 @@ const isCaptured = (giftCard: PaymentLike | null): boolean =>
  * DOUBLE-CHARGES the customer: the released gift card no longer reduces the cart, so
  * the card takes the full total, and the burn spends the points on top. Fail-closed.
  */
-const isReleased = (giftCard: PaymentLike | null): boolean =>
-  Boolean(giftCard) &&
-  (giftCard!.transactions ?? []).some((t) => t.type === 'CancelAuthorization' && t.state === 'Success');
+const isReleased = (giftCard: PaymentLike | null): boolean => Boolean(giftCard) && hasRelease(giftCard!);
 
 /**
  * Decide whether to trigger the gift-card capture for this order. Capture only
