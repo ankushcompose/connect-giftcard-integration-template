@@ -34,3 +34,26 @@ export const extractReservationCode = (payment: Payment): string | null => {
  */
 export const alreadyCaptured = (payment: Payment): boolean =>
   (payment.transactions ?? []).some((t) => t.type === 'Charge' && t.state === 'Success');
+
+/**
+ * How an automated reversal must be answered for a gift-card payment.
+ *
+ * commercetools triggers a reversal on every OTHER payment when one leg fails —
+ * so a declined card asks this connector to give the points back. Under deferred
+ * burn the answer depends on whether the burn actually ran:
+ *
+ *  - `release-reservation` — points were only HELD (no successful Charge). Nothing
+ *    left the member's account, so the hold is simply released. Recording a failed
+ *    Refund here (the pre-deferred-burn behaviour, from when applying points always
+ *    spent them immediately) would claim we owe the member points on EVERY declined
+ *    split payment, burying the genuine failures that need manual reconciliation.
+ *  - `refund-burned-points` — a real burn completed. Qantas offers no refund/void
+ *    contract, so this still fails closed and is flagged for manual reconciliation.
+ *
+ * Works unchanged in immediate-burn mode: redeem() writes a successful Charge there,
+ * so every reversal correctly takes the `refund-burned-points` path.
+ */
+export type ReversalPlan = 'release-reservation' | 'refund-burned-points';
+
+export const planReversal = (payment: Payment): ReversalPlan =>
+  alreadyCaptured(payment) ? 'refund-burned-points' : 'release-reservation';

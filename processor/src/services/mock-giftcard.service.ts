@@ -33,7 +33,7 @@ import { MockCustomError } from '../errors/mock-api.error';
 import { BalanceConverter } from './converters/balance-converter';
 import { RedemptionConverter } from './converters/redemption-converter';
 import { computeCoverableAmount } from './coverable-amount';
-import { extractReservationCode, alreadyCaptured } from './deferred-burn';
+import { extractReservationCode, alreadyCaptured, planReversal } from './deferred-burn';
 
 import packageJSON from '../../package.json';
 import { log } from '../libs/logger';
@@ -559,6 +559,30 @@ export class MockGiftCardService extends AbstractGiftCardService {
   }
 
   private async handleRefunds(request: RefundPaymentRequest): Promise<PaymentProviderModificationResponse> {
+    // DEFERRED BURN (FOR0001-416): a failed card leg makes commercetools reverse
+    // every other payment on the cart, which lands here. When the points were only
+    // RESERVED and never burned there is nothing to give back — release the hold
+    // and report success. See `planReversal` for why a failed Refund would be wrong.
+    if (planReversal(request.payment) === 'release-reservation') {
+      await this.ctPaymentService.updatePayment({
+        id: request.payment.id,
+        transaction: {
+          type: 'CancelAuthorization',
+          amount: request.amount,
+          state: 'Success',
+        },
+      });
+      log.info('[qantas] reservation released — points were held, never burned (nothing to refund)', {
+        paymentId: request.payment.id,
+      });
+      return {
+        outcome: PaymentModificationStatus.APPROVED,
+        pspReference: request.payment.interfaceId || '',
+      };
+    }
+
+    // Points were genuinely burned. Qantas has no refund/void contract wired, so
+    // this stays fail-closed: never report a refund that did not move points.
     await this.ctPaymentService.updatePayment({
       id: request.payment.id,
       transaction: {

@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 import { Payment } from '@commercetools/connect-payments-sdk';
-import { extractReservationCode, alreadyCaptured } from '../src/services/deferred-burn';
+import { extractReservationCode, alreadyCaptured, planReversal } from '../src/services/deferred-burn';
 
 const CODE = 'QF:1900009653:ec3efcc4-b6d1-4953-b921-6fce2c3b461d:2000:AUD';
 
@@ -40,5 +40,32 @@ describe('alreadyCaptured', () => {
 
   test('false when a Charge exists but failed', () => {
     expect(alreadyCaptured(payment([{ type: 'Charge', state: 'Failure' }]))).toBe(false);
+  });
+});
+
+describe('planReversal', () => {
+  test('releases the hold when points were reserved but never burned', () => {
+    const p = payment([{ type: 'Authorization', state: 'Success', interactionId: CODE }]);
+    expect(planReversal(p)).toBe('release-reservation');
+  });
+
+  test('refunds (fail-closed) once a successful Charge proves the burn ran', () => {
+    const p = payment([
+      { type: 'Authorization', state: 'Success', interactionId: CODE },
+      { type: 'Charge', state: 'Success', interactionId: '300000204909' },
+    ]);
+    expect(planReversal(p)).toBe('refund-burned-points');
+  });
+
+  test('a FAILED Charge is not a burn — the hold is still only released', () => {
+    const p = payment([
+      { type: 'Authorization', state: 'Success', interactionId: CODE },
+      { type: 'Charge', state: 'Failure' },
+    ]);
+    expect(planReversal(p)).toBe('release-reservation');
+  });
+
+  test('a payment with no transactions releases rather than claiming a failed refund', () => {
+    expect(planReversal(payment([]))).toBe('release-reservation');
   });
 });
